@@ -7,7 +7,8 @@ import scipy.special as special
 def sigmoid_function(x):
 	return 1.0/(1.0 + np.exp(-x))
 
-def compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, gamma_alpha, gamma_beta, theta_a, theta_b, K):
+def compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, W_var_s_0, gamma_alpha, gamma_beta, theta_a, theta_b, K):
+	# I THINK THIS IS WHERE WE ARE GOING WRONG!!!!!
 	log_const = 1e-13
 	num_feat = W_mu.shape[1]
 	# Relevent expectations
@@ -15,7 +16,7 @@ def compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, gamma_alpha, gam
 	gamma_expected = gamma_alpha/gamma_beta
 	log_theta_expected_val = special.digamma(theta_a) - special.digamma(theta_a + theta_b)
 	log_1_minus_theta_expected_val = special.digamma(theta_b) - special.digamma(theta_a + theta_b)
-	W_var_s_0 = np.dot(np.transpose([(gamma_beta/gamma_alpha)]),np.ones((1,num_feat)))
+	#W_var_s_0_temp = np.dot(np.transpose([(gamma_beta/gamma_alpha)]),np.ones((1,num_feat)))
 	W_squared_expected_val = (S*(np.square(W_mu) + W_var)) + ((1.0-S)*W_var_s_0)
 
 	# Initialize variables
@@ -27,12 +28,17 @@ def compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, gamma_alpha, gam
 	entropy_term_b = 0
 
 	for k in range(K):
-		likelihood_term_a = likelihood_term_a + (num_feat/2.0)*np.log(gamma_expected[k])
+		likelihood_term_a = likelihood_term_a + (num_feat/2.0)*log_gamma_expected[k]
 		likelihood_term_b = likelihood_term_b - (np.sum(W_squared_expected_val[k,:])*gamma_expected[k]/2.0)
 		likelihood_term_c = likelihood_term_c + (np.sum(S[k,:])*log_theta_expected_val[k])
 		likelihood_term_d = likelihood_term_d + (np.sum(1.0-S[k,:])*log_1_minus_theta_expected_val[k])
-		entropy_term_a = entropy_term_a + (.5)*np.sum(np.log((S[k,:]*W_var[k,:]) + ((1-S[k,:])*W_var_s_0[k,:])))
-		entropy_term_b = entropy_term_b + np.sum(((1.0-S[k,:])*np.log(log_const+1.0-S[k,:])) - (S[k,:]*np.log(log_const+S[k,:])))
+		#entropy_term_a = entropy_term_a + (.5)*np.sum(np.log((S[k,:]*W_var[k,:]) + ((1-S[k,:])*W_var_s_0[k,:])))
+		entropy_term_a = entropy_term_a - (.5)*np.sum(S[k,:]*np.log(W_var[k,:]) + (1.0-S[k,:])*np.log(W_var_s_0[k,:]))
+
+		temp_term_b = ((1.0-S[k,:])*np.log(1.0-S[k,:])) + (S[k,:]*np.log(S[k,:]))
+		temp_term_b[np.isnan(temp_term_b)] = 0.
+		entropy_term_b = entropy_term_b + np.sum(temp_term_b)
+		#entropy_term_b = entropy_term_b + np.sum(((1.0-S[k,:])*np.log(log_const+1.0-S[k,:])) - (S[k,:]*np.log(log_const+S[k,:])))
 	
 	kl_divergence = entropy_term_a + entropy_term_b - likelihood_term_a - likelihood_term_b - likelihood_term_c - likelihood_term_d
 
@@ -43,8 +49,8 @@ def compute_kl_divergence_of_gamma(alpha_prior, beta_prior, gamma_alpha, gamma_b
 	log_gamma_expected = special.digamma(gamma_alpha) - np.log(gamma_beta)
 	gamma_expected = gamma_alpha/gamma_beta
 	# Compute kl divergence
-	likelihood_term = np.sum(alpha_prior*np.log(beta_prior) + (alpha_prior-1.0)*log_gamma_expected - beta_prior*gamma_expected - np.log(special.gamma(alpha_prior)))
-	entropy_term = np.sum(gamma_alpha*np.log(gamma_beta) + (gamma_alpha-1.0)*log_gamma_expected - gamma_beta*gamma_expected - np.log(special.gamma(gamma_alpha)))
+	likelihood_term = np.sum(alpha_prior*np.log(beta_prior) + (alpha_prior-1.0)*log_gamma_expected - beta_prior*gamma_expected - special.gammaln(alpha_prior))
+	entropy_term = np.sum(gamma_alpha*np.log(gamma_beta) + (gamma_alpha-1.0)*log_gamma_expected - gamma_beta*gamma_expected - special.gammaln(gamma_alpha))
 	kl_divergence = entropy_term - likelihood_term
 	return kl_divergence
 
@@ -53,20 +59,21 @@ def compute_kl_divergence_of_beta(a_prior, b_prior, theta_a, theta_b):
 	ln_theta_expected_val = special.digamma(theta_a) - special.digamma(theta_a + theta_b)
 	ln_1_minus_theta_expected_val = special.digamma(theta_b) - special.digamma(theta_a + theta_b)
 	# Compuate kl divergence
-	likelihood_term = np.sum((a_prior-1.0)*ln_theta_expected_val + (b_prior-1.0)*ln_1_minus_theta_expected_val - np.log(special.beta(a_prior, b_prior)))
-	entropy_term = np.sum((theta_a-1.0)*ln_theta_expected_val + (theta_b-1.0)*ln_1_minus_theta_expected_val - np.log(special.beta(theta_a, theta_b)))
+	likelihood_term = np.sum((a_prior-1.0)*ln_theta_expected_val + (b_prior-1.0)*ln_1_minus_theta_expected_val - special.betaln(a_prior, b_prior))
+	entropy_term = np.sum((theta_a-1.0)*ln_theta_expected_val + (theta_b-1.0)*ln_1_minus_theta_expected_val - special.betaln(theta_a, theta_b))
 	kl_divergence = entropy_term - likelihood_term
 	return kl_divergence
 
 class EQTL_FACTORIZATION_VI(object):
-	def __init__(self, K, alpha, beta, a, b, n_iter):
+	def __init__(self, K, alpha, beta, a, b, max_iter, delta_elbo_threshold):
 		self.alpha_prior = alpha
 		self.beta_prior = beta
 		self.a_prior = a 
 		self.b_prior = b
-		self.n_iter = n_iter
+		self.max_iter = max_iter
 		self.K = K
 		self.iter = 0
+		self.delta_elbo_threshold = delta_elbo_threshold
 	def fit(self, *, G, Y, z):
 		""" Fit the model.
 			Args:
@@ -80,77 +87,40 @@ class EQTL_FACTORIZATION_VI(object):
 		self.initialize_variables()
 		self.update_elbo()
 		# Loop through VI iterations
-		for vi_iter in range(self.n_iter):
+		for vi_iter in range(self.max_iter):
 			self.iter = self.iter + 1
 			old_U = np.copy(self.U_mu) 
 			old_V = np.copy(self.V_mu)
 			old_alpha = np.copy(self.alpha_mu)
+			# Update parameter estimaters via coordinate ascent
 			self.update_U()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_V()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_alpha()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_tau()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_psi()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_gamma_U()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_gamma_V()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_gamma_F()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_theta_U()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_theta_V()
-			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
-
 			self.update_theta_F()
+			# Compute ELBO after update
 			self.update_elbo()
-			if self.elbo_increase == False:
-				pdb.set_trace()
 
 			current_elbo = self.elbo[self.iter]
-			delta_elbo = current_elbo - self.elbo[self.iter-1]
+			delta_elbo = (current_elbo - self.elbo[self.iter-1])
+			if delta_elbo < 0:
+				print('elbo decrease')
+				pdb.set_trace()
 
 			####################
 			print('Variational Inference iteration: ' + str(vi_iter))
-			diff_U = np.mean(np.abs(self.U_mu - old_U))
-			diff_alpha = np.mean(np.abs(self.alpha_mu - old_alpha))
-			diff_V = np.mean(np.abs(self.V_mu - old_V))
-			print('Mean delta U: ' + str(diff_U))
-			print('Mean delta V: ' + str(diff_V))
-			print('Mean delta alpha: ' + str(diff_alpha))
+			#diff_U = np.mean(np.abs(self.U_mu - old_U))
+			#diff_alpha = np.mean(np.abs(self.alpha_mu - old_alpha))
+			#diff_V = np.mean(np.abs(self.V_mu - old_V))
+			#print('Mean delta U: ' + str(diff_U))
+			#print('Mean delta V: ' + str(diff_V))
+			#print('Mean delta alpha: ' + str(diff_alpha))
 			print('delta ELBO: ' + str(delta_elbo))
 			print('##############')
 	def update_U(self):
@@ -180,6 +150,8 @@ class EQTL_FACTORIZATION_VI(object):
 		# Update variance of q(U|s=1)
 		a_term = np.sum(tau_expected_val*np.square(self.G[sample_index,:])*V_k_S_k_squared_expected_val) + gamma_k_u_expected_val
 		self.U_var[sample_index, k] = 1.0/a_term
+		# Update variance of q(U|s=0)
+		self.U_var_s_0[sample_index, k] = self.gamma_U_beta[k]/self.gamma_U_alpha[k]
 		# Update mean of q(U|s=1)
 		resid = self.Y[sample_index,:] - alpha_i_expected_val - self.G[sample_index,:]*(F_S_expected_val + other_components_expected)
 		b_term = np.sum(tau_expected_val*self.G[sample_index,:]*V_k_S_k_expected_val*resid)
@@ -215,12 +187,13 @@ class EQTL_FACTORIZATION_VI(object):
 		# Update variance of q(V|s=1)
 		a_term = gamma_k_v_expected_val + tau_t_expected_val*np.sum(np.square(self.G[:,test_index])*U_k_S_k_squared_expected_val)
 		self.V_var[k, test_index] = 1.0/a_term
+		# Update variance of q(V|s=1)
+		self.V_var_s_0[k,test_index] = self.gamma_V_beta[k]/self.gamma_V_alpha[k]
 		# Update mean of q(U|s=1)
 		resid = self.Y[:,test_index] - alpha_t_expected_val - self.G[:,test_index]*(other_components_expected + F_S_t_expected_val)
 		b_term = np.sum(tau_t_expected_val*self.G[:,test_index]*U_k_S_k_expected_val*resid)
 		self.V_mu[k, test_index] = self.V_var[k, test_index]*b_term
 		# Now update q(S_V=1)
-		#z_term = np.log(theta_V_expected_val/(1.0-theta_V_expected_val)) + .5*np.log(gamma_k_v_expected_val) - .5*np.log(a_term) + (np.square(b_term)/(2.0*a_term))
 		z_term = ln_theta_V_expected_val - ln_1_minus_theta_V_expected_val + .5*np.log(gamma_k_v_expected_val) - .5*np.log(a_term) + (np.square(b_term)/(2.0*a_term))
 		self.S_V[k, test_index] = sigmoid_function(z_term)
 	def update_F_t(self, test_index):
@@ -242,6 +215,8 @@ class EQTL_FACTORIZATION_VI(object):
 		# Update variance of q(F|s=1)
 		a_term = gamma_f_expected_val + tau_t_expected_val*np.sum(np.square(self.G[:,test_index]))
 		self.F_var[test_index] = 1.0/a_term
+		# Update variance of q(F|s=1)
+		self.F_var_s_0[test_index] = self.gamma_F_beta/self.gamma_F_alpha
 		# Update mean of q(F|s=1)
 		resid = self.Y[:,test_index] - alpha_t_expected_val - self.G[:,test_index]*(other_components_expected)
 		b_term = np.sum(tau_t_expected_val*self.G[:,test_index]*resid)
@@ -292,17 +267,20 @@ class EQTL_FACTORIZATION_VI(object):
 	def update_gamma_V(self):
 		# Loop through factors
 		for k in range(self.K):
-			V_squared_k_expected_val = ((np.square(self.V_mu[k,:]) + self.V_var[k,:])*self.S_V[k,:]) + (1.0-self.S_V[k,:])*(self.gamma_V_beta[k]/self.gamma_V_alpha[k])
+			#V_squared_k_expected_val = ((np.square(self.V_mu[k,:]) + self.V_var[k,:])*self.S_V[k,:]) + (1.0-self.S_V[k,:])*(self.gamma_V_beta[k]/self.gamma_V_alpha[k])
+			V_squared_k_expected_val = ((np.square(self.V_mu[k,:]) + self.V_var[k,:])*self.S_V[k,:]) + (1.0-self.S_V[k,:])*(self.V_var_s_0[k,:])
 			self.gamma_V_alpha[k] = self.alpha_prior + (self.T/2.0)
 			self.gamma_V_beta[k] = self.beta_prior + np.sum(V_squared_k_expected_val)/2.0
 	def update_gamma_U(self):
 		# Loop through factors
 		for k in range(self.K):
-			U_squared_k_expected_val = ((np.square(self.U_mu[:,k]) + self.U_var[:,k])*self.S_U[:,k]) + (1.0-self.S_U[:,k])*(self.gamma_U_beta[k]/self.gamma_U_alpha[k])
+			#U_squared_k_expected_val = ((np.square(self.U_mu[:,k]) + self.U_var[:,k])*self.S_U[:,k]) + (1.0-self.S_U[:,k])*(self.gamma_U_beta[k]/self.gamma_U_alpha[k])
+			U_squared_k_expected_val = ((np.square(self.U_mu[:,k]) + self.U_var[:,k])*self.S_U[:,k]) + (1.0-self.S_U[:,k])*(self.U_var_s_0[:,k])
 			self.gamma_U_alpha[k] = self.alpha_prior + (self.N/2.0)
 			self.gamma_U_beta[k] = self.beta_prior + np.sum(U_squared_k_expected_val)/2.0
 	def update_gamma_F(self):
-		F_squared_expected_val = ((np.square(self.F_mu) + self.F_var)*self.S_F) + (1.0-self.S_F)*(self.gamma_F_beta/self.gamma_F_alpha)
+		#F_squared_expected_val = ((np.square(self.F_mu) + self.F_var)*self.S_F) + (1.0-self.S_F)*(self.gamma_F_beta/self.gamma_F_alpha)
+		F_squared_expected_val = ((np.square(self.F_mu) + self.F_var)*self.S_F) + (1.0-self.S_F)*(self.F_var_s_0)
 		self.gamma_F_alpha = self.alpha_prior + (self.T/2.0)
 		self.gamma_F_beta = self.beta_prior + np.sum(F_squared_expected_val)/2.0
 	def update_theta_U(self):
@@ -377,6 +355,9 @@ class EQTL_FACTORIZATION_VI(object):
 			itera = len(self.elbo)-1
 			if self.elbo[itera] < self.elbo[itera-1]:
 				self.elbo_increase = False
+				print(self.elbo[itera] - self.elbo[itera-1])
+			else:
+				self.elbo_increase = True
 
 	def compute_kl_divergence_of_theta_f(self):
 		a_prior = self.a_prior
@@ -458,33 +439,36 @@ class EQTL_FACTORIZATION_VI(object):
 		S = np.asarray([self.S_F])
 		W_mu = np.asarray([self.F_mu])
 		W_var = np.asarray([self.F_var])
+		W_var_s_0 = np.asarray([self.F_var_s_0])
 		gamma_alpha = np.asarray([self.gamma_F_alpha])
 		gamma_beta = np.asarray([self.gamma_F_beta])
 		theta_a = np.asarray([self.theta_F_a])
 		theta_b = np.asarray([self.theta_F_b])
-		kl_divergence = compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, gamma_alpha, gamma_beta, theta_a, theta_b, 1)
+		kl_divergence = compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, W_var_s_0, gamma_alpha, gamma_beta, theta_a, theta_b, 1)
 		return kl_divergence
 
 	def compute_kl_divergence_of_V_S(self):
 		S = self.S_V 
 		W_mu = self.V_mu
 		W_var = self.V_var
+		W_var_s_0 = self.V_var_s_0
 		gamma_alpha = self.gamma_V_alpha
 		gamma_beta = self.gamma_V_beta
 		theta_a = self.theta_V_a
 		theta_b = self.theta_V_b
-		kl_divergence = compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, gamma_alpha, gamma_beta, theta_a, theta_b, self.K)
+		kl_divergence = compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, W_var_s_0, gamma_alpha, gamma_beta, theta_a, theta_b, self.K)
 		return kl_divergence
 
 	def compute_kl_divergence_of_U_S(self):
 		S = np.transpose(self.S_U)
 		W_mu = np.transpose(self.U_mu)
 		W_var = np.transpose(self.U_var)
+		W_var_s_0 = np.transpose(self.U_var_s_0)
 		gamma_alpha = self.gamma_U_alpha
 		gamma_beta = self.gamma_U_beta
 		theta_a = self.theta_U_a
 		theta_b = self.theta_U_b
-		kl_divergence = compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, gamma_alpha, gamma_beta, theta_a, theta_b, self.K)
+		kl_divergence = compute_kl_divergence_of_gaussian_bernoulli(S, W_mu, W_var, W_var_s_0, gamma_alpha, gamma_beta, theta_a, theta_b, self.K)
 		return kl_divergence
 
 	def compute_elbo_log_likelihood_term(self):
@@ -519,17 +503,17 @@ class EQTL_FACTORIZATION_VI(object):
 		alpha_squared = np.square(self.alpha_big_mu) + self.alpha_big_var
 		alpha = self.alpha_big_mu
 		F_S_squared = ((np.square(self.F_mu) + self.F_var)*self.S_F)
-		V_S_t_squared = ((np.square(self.V_mu) + self.V_var)*self.S_V)
+		V_S_squared = ((np.square(self.V_mu) + self.V_var)*self.S_V)
 		U_S_squared = ((np.square(self.U_mu) + self.U_var)*self.S_U)
 
-		componenent_squared_terms = np.dot(U_S_squared, V_S_t_squared) + np.dot(np.ones((self.N,1)),[F_S_squared])
+		componenent_squared_terms = np.dot(U_S_squared, V_S_squared) + np.dot(np.ones((self.N,1)),[F_S_squared])
 		componenent_terms = np.dot(U_S, V_S)
 		F_terms = np.dot(np.ones((self.N,1)),[F_S])
 
 
 		# Terms of interest in likelihood
 		term_a = -np.log(2.0*np.pi)*(self.N*self.T/2.0)
-		term_b = (self.N/2.0)*np.sum(np.log(tau_expected))
+		term_b = (self.N/2.0)*np.sum(log_tau_expected)
 		# Compute residual matrix
 		#residual_mat = self.Y - self.G*(np.dot(U_S, V_S) + np.dot(np.ones((self.N,1)),[F_S])) - self.alpha_big_mu
 		squared_residual_mat = np.square(self.Y) + alpha_squared + np.square(self.G)*componenent_squared_terms
@@ -539,10 +523,9 @@ class EQTL_FACTORIZATION_VI(object):
 		#squared_residual_mat = squared_residual_mat + 2.0*np.square(self.G)*componenent_terms*componenent_terms
 		for k in range(self.K):
 			for j in range(self.K):
-				pdb.set_trace()
-				#squared_residual_mat = squared_residual_mat + 2.0*np.square(self.G)*componenent_terms
+				if k != j:
+					squared_residual_mat = squared_residual_mat + np.square(self.G)*np.dot(np.transpose([U_S[:,k]]), [V_S[k,:]])*np.dot(np.transpose([U_S[:,j]]), [V_S[j,:]])
 		
-
 		term_c = np.sum(squared_residual_mat*tau_expected)/2.0
 		data_likelihood_term = term_a + term_b - term_c
 		return data_likelihood_term
@@ -578,10 +561,13 @@ class EQTL_FACTORIZATION_VI(object):
 		# Us and Vs
 		self.U_mu = np.random.randn(self.N, self.K)
 		self.U_var = np.ones((self.N, self.K))
+		self.U_var_s_0 = np.ones((self.N, self.K))
 		self.V_mu = np.random.randn(self.K, self.T)
 		self.V_var = np.ones((self.K, self.T))
+		self.V_var_s_0 = np.ones((self.K, self.T))
 		self.F_mu = np.random.randn(self.T)
 		self.F_var = np.ones(self.T)
+		self.F_var_s_0 = np.ones(self.T)
 		# Masks
 		self.S_U = np.zeros((self.N, self.K)) + .5
 		self.S_V = np.zeros((self.K, self.T)) + .5

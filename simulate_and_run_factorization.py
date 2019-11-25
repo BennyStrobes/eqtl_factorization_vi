@@ -159,8 +159,8 @@ np.random.seed(1)
 # Simulate data
 ##########################
 I = 22
-Ni = 5
-T = 300
+Ni = 30
+T = 3000
 K = 3
 alpha_0 = 1e-3
 beta_0 = 1e-3
@@ -173,6 +173,6 @@ Y, G, z, data = simulate_data_for_eqtl_factorization2(I, Ni, T, K)
 ##################
 # Fit eqtl factorization using home-built variational inference
 ##################
-eqtl_vi = eqtl_factorization_vi.EQTL_FACTORIZATION_VI(K=5, alpha=1e-3, beta=1e-3, a=1, b=1, n_iter=1500)
+eqtl_vi = eqtl_factorization_vi.EQTL_FACTORIZATION_VI(K=5, alpha=1e-3, beta=1e-3, a=1, b=1, max_iter=3000, delta_elbo_threshold=.01)
 eqtl_vi.fit(G=G, Y=Y, z=z)
 pdb.set_trace()
